@@ -1,123 +1,210 @@
 import cv2
 import mediapipe as mp
+import math
+import time
 from alertas_sonoras import AlertaSonora
 
 # Se cargan los módulos de pose y dibujo de MediaPipe una sola vez.
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
+MIN_MUESTRAS_FASE = 10
 
 
-def evaluar_postura_estatica(video_source=0):
+def _obtener_centro_equilibrio(landmarks):
+    """Obtiene el centro corporal y la escala horizontal para medir oscilación."""
+    indices = (
+        mp_pose.PoseLandmark.LEFT_SHOULDER.value,
+        mp_pose.PoseLandmark.RIGHT_SHOULDER.value,
+        mp_pose.PoseLandmark.LEFT_HIP.value,
+        mp_pose.PoseLandmark.RIGHT_HIP.value,
+        mp_pose.PoseLandmark.LEFT_ANKLE.value,
+        mp_pose.PoseLandmark.RIGHT_ANKLE.value,
+    )
+    if not all(landmarks[index].visibility >= 0.5 for index in indices):
+        return None
+
+    hombros_x = (
+        landmarks[indices[0]].x + landmarks[indices[1]].x
+    ) / 2
+    caderas_x = (landmarks[indices[2]].x + landmarks[indices[3]].x) / 2
+    tobillos_x = (landmarks[indices[4]].x + landmarks[indices[5]].x) / 2
+    centro_x = (hombros_x + caderas_x + tobillos_x) / 3
+    centro_y = (
+        landmarks[indices[0]].y
+        + landmarks[indices[1]].y
+        + landmarks[indices[2]].y
+        + landmarks[indices[3]].y
+    ) / 4
+    escala = abs(landmarks[indices[0]].x - landmarks[indices[1]].x)
+    return centro_x, centro_y, escala
+
+
+def evaluar_romberg(video_source=0, duracion_fase=30.0):
+    """Evalúa la oscilación corporal con ojos abiertos y cerrados.
+
+    La transición a la fase de ojos cerrados se hace con la tecla ESPACIO para
+    que el programa no tenga que inferir el cierre de ojos con una cámara 2D.
     """
-    Modelo 1: Evalúa la alineación vertical y simetría corporal (Hombros y Tronco).
-    Retorna métricas de desviación para guardar en la base de datos como línea base.
-    """
-    cap = cv2.VideoCapture(video_source)  # Abre la cámara o fuente de vídeo.
-    if not cap.isOpened():  # Evita iniciar el análisis si la cámara no está disponible.
+    if duracion_fase <= 0:
+        raise ValueError("La duración de cada fase debe ser mayor que cero.")
+
+    cap = cv2.VideoCapture(video_source)
+    if not cap.isOpened():
         raise RuntimeError("No se pudo abrir la cámara o fuente de vídeo.")
 
-    alerta_sonora = AlertaSonora()  # Controla las alertas sin emitir un pitido por cada fotograma.
-    resultados_sesion = {
-        "hombro_desnivel": None,
-        "inclinacion_tronco": None,
+    resultados = {
+        "prueba": "romberg",
+        "completada": False,
+        "ojos_abiertos": None,
+        "ojos_cerrados": None,
+        "diferencia_oscilacion": None,
         "estado": "Sin datos",
-    }  # Conserva el último resultado válido de la sesión.
+        "interpretacion": None,
+    }
+    fases = ("ojos_abiertos", "ojos_cerrados")
+    fase = 0
+    inicio_fase = None
+    fase_cerrada_lista = False
+    referencia = None
+    oscilaciones = []
+    alerta_sonora = AlertaSonora()
 
     try:
         with mp_pose.Pose(
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
-        ) as pose:  # Crea el detector y garantiza su liberación.
-            print("Iniciando evaluación postural inicial. Manténgase de pie frente a la cámara...")
-
-            while True:
-                ret, frame = cap.read()  # Lee un fotograma de la cámara.
+        ) as pose:
+            while fase < len(fases):
+                ret, frame = cap.read()
                 if not ret:
-                    print("No se pudo leer un fotograma de la cámara.")
-                    break
+                    raise RuntimeError("No se pudo leer un fotograma de la cámara.")
 
-                image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # MediaPipe requiere formato RGB.
-                image.flags.writeable = False  # Evita una copia innecesaria durante el procesamiento.
-                results = pose.process(image)  # Obtiene los puntos corporales.
+                image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                image.flags.writeable = False
+                results = pose.process(image)
                 image.flags.writeable = True
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)  # OpenCV muestra imágenes BGR.
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-                if results.pose_landmarks:
-                    landmarks = results.pose_landmarks.landmark
-                    indices = (
-                        mp_pose.PoseLandmark.LEFT_SHOULDER.value,
-                        mp_pose.PoseLandmark.RIGHT_SHOULDER.value,
-                        mp_pose.PoseLandmark.LEFT_HIP.value,
-                        mp_pose.PoseLandmark.RIGHT_HIP.value,
+                if inicio_fase is None and fase == 0:
+                    inicio_fase = time.monotonic()
+                    referencia = None
+                    oscilaciones = []
+
+                centro = None
+                if inicio_fase is not None and results.pose_landmarks:
+                    centro = _obtener_centro_equilibrio(results.pose_landmarks.landmark)
+                    mp_drawing.draw_landmarks(
+                        image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS
                     )
-                    if all(landmarks[index].visibility >= 0.5 for index in indices):
-                        hombro_izq = landmarks[indices[0]]
-                        hombro_der = landmarks[indices[1]]
-                        cadera_izq = landmarks[indices[2]]
-                        cadera_der = landmarks[indices[3]]
 
-                        desnivel_hombros = abs(hombro_izq.y - hombro_der.y) * 100
-                        centro_hombros_x = (hombro_izq.x + hombro_der.x) / 2
-                        centro_caderas_x = (cadera_izq.x + cadera_der.x) / 2
-                        inclinacion_tronco = abs(centro_hombros_x - centro_caderas_x) * 100
-                        resultados_sesion.update(
-                            hombro_desnivel=round(desnivel_hombros, 2),
-                            inclinacion_tronco=round(inclinacion_tronco, 2),
-                            estado="Correcta" if desnivel_hombros < 3.0 else "Revisar",
-                        )
+                if centro is not None:
+                    centro_x, centro_y, escala = centro
+                    if escala > 0:
+                        if referencia is None:
+                            referencia = (centro_x, centro_y)
+                        distancia = math.hypot(
+                            centro_x - referencia[0], centro_y - referencia[1]
+                        ) / escala * 100
+                        oscilaciones.append(distancia)
 
-                        color = (0, 255, 0) if desnivel_hombros < 3.0 else (0, 0, 255)
-                        if desnivel_hombros >= 3.0:
-                            alerta_sonora.emitir()
-                        cv2.putText(
-                            image,
-                            f"Desnivel hombros: {desnivel_hombros:.1f}%",
-                            (30, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8,
-                            color,
-                            2,
-                        )
-                        cv2.putText(
-                            image,
-                            f"Inclinacion tronco: {inclinacion_tronco:.1f}%",
-                            (30, 85),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,
-                            color,
-                            2,
-                        )
-                        mp_drawing.draw_landmarks(
-                            image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS
-                        )
-                    else:
-                        cv2.putText(
-                            image,
-                            "Mantenga hombros y caderas visibles",
-                            (30, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,
-                            (0, 165, 255),
-                            2,
-                        )
-
+                transcurrido = (
+                    time.monotonic() - inicio_fase if inicio_fase is not None else 0
+                )
+                restante = max(0, duracion_fase - transcurrido)
+                nombre_fase = "ojos abiertos" if fase == 0 else "ojos cerrados"
                 cv2.putText(
                     image,
-                    'Presione "ESC" para guardar evaluacion',
-                    (30, 450),
+                    f"Romberg: {nombre_fase} ({restante:.0f}s)",
+                    (30, 45),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2,
+                )
+                if fase == 0:
+                    instruccion = "Coloque los pies juntos y mantenga los ojos abiertos"
+                elif not fase_cerrada_lista:
+                    instruccion = "Cierre los ojos y presione ESPACIO para comenzar"
+                else:
+                    instruccion = "Mantenga los ojos cerrados. ESC: cancelar"
+                cv2.putText(
+                    image,
+                    instruccion,
+                    (30, 85),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
                     (255, 255, 255),
                     1,
                 )
-                cv2.imshow("Modelo 1: Evaluacion Postural Inicial", image)
-                if cv2.waitKey(10) & 0xFF == 27:  # ESC finaliza y conserva el último dato válido.
-                    break
-    finally:
-        cap.release()  # Libera la cámara aunque ocurra un error.
-        cv2.destroyAllWindows()  # Cierra las ventanas creadas por OpenCV.
+                cv2.imshow("Prueba de Romberg", image)
+                tecla = cv2.waitKey(10) & 0xFF
 
-    return resultados_sesion
+                if tecla == 27:
+                    break
+                if fase == 1 and not fase_cerrada_lista and tecla == 32:
+                    fase_cerrada_lista = True
+                    inicio_fase = time.monotonic()
+                    referencia = None
+                    oscilaciones = []
+
+                if inicio_fase is not None and transcurrido >= duracion_fase:
+                    if len(oscilaciones) >= MIN_MUESTRAS_FASE:
+                        resultados[fases[fase]] = {
+                            "oscilacion_maxima": round(max(oscilaciones), 2),
+                            "oscilacion_promedio": round(
+                                sum(oscilaciones) / len(oscilaciones), 2
+                            ),
+                            "muestras": len(oscilaciones),
+                        }
+                    fase += 1
+                    inicio_fase = None
+                    fase_cerrada_lista = False
+
+            if resultados["ojos_abiertos"] and resultados["ojos_cerrados"]:
+                abiertas = resultados["ojos_abiertos"]["oscilacion_promedio"]
+                cerradas = resultados["ojos_cerrados"]["oscilacion_promedio"]
+                resultados["diferencia_oscilacion"] = round(cerradas - abiertas, 2)
+                resultados["estado"] = (
+                    "Mayor oscilación con ojos cerrados"
+                    if cerradas > abiertas
+                    else "Sin aumento evidente de oscilación"
+                )
+                resultados["interpretacion"] = (
+                    "Se observó mayor oscilación al retirar la referencia visual."
+                    if cerradas > abiertas
+                    else "No se observó un aumento de oscilación al retirar la referencia visual."
+                )
+                resultados["completada"] = True
+                if cerradas > abiertas:
+                    alerta_sonora.emitir()
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+    return resultados
+
+
+def mostrar_resultado_romberg(resultados):
+    """Muestra en consola el resumen de una prueba completada."""
+    print("\n--- Resultado de la prueba de Romberg ---")
+    if not resultados["completada"]:
+        print("La prueba no se completó o no hubo suficientes datos válidos.")
+        return
+
+    abiertos = resultados["ojos_abiertos"]
+    cerrados = resultados["ojos_cerrados"]
+    print(f"Ojos abiertos - oscilación promedio: "
+          f"{abiertos['oscilacion_promedio']:.2f}%")
+    print(f"Ojos cerrados - oscilación promedio: "
+          f"{cerrados['oscilacion_promedio']:.2f}%")
+    print(f"Diferencia: {resultados['diferencia_oscilacion']:.2f}%")
+    print(f"Resultado: {resultados['estado']}")
+    print(f"Interpretación: {resultados['interpretacion']}")
+    print("Nota: este resultado es orientativo y no constituye un diagnóstico clínico.")
+
 
 if __name__ == "__main__":
-    evaluar_postura_estatica()  # Ejecuta la evaluación cuando se inicia este archivo directamente.
+    resultado = evaluar_romberg()
+    time.sleep(5)
+    mostrar_resultado_romberg(resultado)
+    input("\nPresione ENTER para cerrar...")

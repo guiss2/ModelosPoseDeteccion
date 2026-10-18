@@ -7,7 +7,7 @@ Proyecto de tesis para analizar ejercicios de equilibrio mediante una cámara we
 ## Características
 
 - Detección de puntos corporales en tiempo real mediante MediaPipe Pose.
-- Evaluación postural inicial.
+- Prueba de Romberg mediante comparación de la oscilación con ojos abiertos y cerrados.
 - Marcha tándem o talón-punta.
 - Apoyo unipodal intercalado.
 - Postura del árbol adaptada.
@@ -58,19 +58,44 @@ Si PowerShell bloquea la activación, se puede utilizar directamente el ejecutab
 
 ## Ejecución
 
-### Evaluación postural inicial
+### Prueba de Romberg
 
-```powershell
-.\venv\Scripts\python.exe evaluacion.py
+La función `evaluar_romberg()` en `evaluacion.py` registra la oscilación del
+centro corporal durante una fase con ojos abiertos y otra con ojos cerrados.
+La persona debe colocarse con los pies juntos y presionar `ESPACIO` cuando esté
+lista para cerrar los ojos. Se puede cancelar con `ESC`.
+
+La función devuelve la oscilación máxima y promedio de cada fase, la diferencia
+entre ambas y un estado descriptivo. Un aumento de oscilación con los ojos
+cerrados es un hallazgo compatible con una alteración del equilibrio, pero no
+constituye un diagnóstico clínico.
+
+La función devuelve un diccionario JSON-compatible, preparado para enviarlo
+posteriormente desde Django:
+
+```python
+{
+    "prueba": "romberg",
+    "completada": True,
+    "ojos_abiertos": {
+        "oscilacion_maxima": 0.0,
+        "oscilacion_promedio": 0.0,
+        "muestras": 0
+    },
+    "ojos_cerrados": {
+        "oscilacion_maxima": 0.0,
+        "oscilacion_promedio": 0.0,
+        "muestras": 0
+    },
+    "diferencia_oscilacion": 0.0,
+    "estado": "Sin aumento evidente de oscilación",
+    "interpretacion": "..."
+}
 ```
 
-Esta evaluación calcula:
+El resultado se mantiene en memoria: todavía no se almacena ni se asocia a un
+paciente hasta integrarlo con Django.
 
-- Desnivel entre los hombros.
-- Inclinación horizontal del tronco.
-- Estado general de la postura.
-
-Presionar `ESC` para finalizar y conservar el último resultado válido en memoria.
 
 ### Ejercicio 1: marcha tándem
 
@@ -78,7 +103,10 @@ Presionar `ESC` para finalizar y conservar el último resultado válido en memor
 .\venv\Scripts\python.exe ejercicio1.py
 ```
 
-La persona debe colocarse de frente a la cámara. El programa compara el ancho de los hombros con el ancho de las caderas para estimar el desequilibrio lateral.
+La persona debe colocarse de frente a la cámara y presionar `q` al terminar.
+El programa calibra la posición inicial de las caderas y mide el desplazamiento
+lateral normalizado respecto al ancho de los hombros. El umbral técnico inicial
+es `5.0%`.
 
 Presionar `q` para salir.
 
@@ -100,8 +128,12 @@ Presionar `q` para salir.
 
 El programa comprueba:
 
-1. Que exista una diferencia de altura entre los pies, como indicador de apoyo unipodal.
-2. Que el tronco conserve una alineación adecuada.
+1. Que un pie se eleve hacia la pantorrilla de la pierna de apoyo.
+2. Que la rodilla elevada se abra hacia afuera y la pierna esté flexionada.
+3. Que el tronco conserve una alineación adecuada.
+4. Que la persona pueda realizar la variante con silla como apoyo de seguridad.
+
+Las manos no tienen una única posición obligatoria: pueden mantenerse juntas frente al pecho o utilizarse para apoyarse, como en las variantes ilustradas.
 
 Presionar `q` para salir.
 
@@ -109,7 +141,7 @@ Presionar `q` para salir.
 
 | Archivo | Descripción |
 |---|---|
-| `evaluacion.py` | Evaluación postural inicial. |
+| `evaluacion.py` | Prueba de Romberg. |
 | `ejercicio1.py` | Marcha tándem. |
 | `ejercicio2.py` | Apoyo unipodal y cálculo de ángulos. |
 | `ejercicio3.py` | Postura del árbol adaptada. |
@@ -144,7 +176,7 @@ Los valores actuales son criterios iniciales que deben validarse con datos reale
 |---|---:|
 | Desnivel de hombros | `3.0` |
 | Desequilibrio lateral en marcha tándem | `5.0` |
-| Diferencia de altura de pies para apoyo unipodal | `0.05` |
+| Diferencia normalizada de altura de pies para apoyo unipodal | `0.05` |
 | Desviación del tronco en postura del árbol | `3.5` |
 | Visibilidad mínima de puntos corporales | `0.5` |
 

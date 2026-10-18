@@ -25,16 +25,18 @@ Cálculos geométricos
    ↓
 Umbrales manuales
    ↓
-Estado de la postura y alerta sonora
+Oscilación corporal y alerta sonora
 ```
 
-Por ejemplo, en `evaluacion.py` se calcula el desnivel de los hombros y se considera que existe una desviación cuando el valor es mayor o igual que `3.0`.
+En `evaluacion.py` se compara la oscilación corporal registrada con los ojos
+abiertos y cerrados. Un aumento durante la fase de ojos cerrados se informa
+como un hallazgo de la prueba, sin interpretarlo como diagnóstico clínico.
 
 ## 2. Archivos principales
 
 | Archivo | Función |
 |---|---|
-| `evaluacion.py` | Evaluación postural inicial y cálculo del desnivel de hombros. |
+| `evaluacion.py` | Prueba de Romberg y cálculo de la oscilación corporal. |
 | `ejercicio1.py` | Marcha tándem, también conocida como talón-punta. |
 | `ejercicio2.py` | Apoyo unipodal intercalado. |
 | `ejercicio3.py` | Postura del árbol adaptada. |
@@ -49,7 +51,7 @@ Abrir PowerShell en la carpeta del proyecto:
 cd "C:\Users\ADMIN\Desktop\MODELO-TESIS2026"
 ```
 
-Ejecutar la evaluación postural inicial:
+Ejecutar la prueba de Romberg:
 
 ```powershell
 .\venv\Scripts\python.exe evaluacion.py
@@ -67,40 +69,59 @@ La cámara debe estar disponible y el usuario debe colocarse dentro del encuadre
 
 ## 4. Reglas que existen actualmente
 
-### 4.1 Evaluación postural inicial
+### 4.1 Prueba de Romberg
 
-En `evaluacion.py` se toman las coordenadas `y` de los hombros:
-
-```text
-desnivel_hombros = abs(y_hombro_izquierdo - y_hombro_derecho) × 100
-```
-
-La regla utilizada es:
+En `evaluacion.py` se registra la oscilación del centro corporal con los ojos
+abiertos y cerrados:
 
 ```text
-desnivel_hombros < 3.0  → postura dentro del umbral
-desnivel_hombros >= 3.0 → alerta
+oscilacion = distancia(centro_actual, centro_inicial)
+             / ancho_de_hombros × 100
 ```
 
-La función devuelve un diccionario con información de la sesión, incluyendo el último dato válido:
+La comparación utilizada es:
+
+```text
+oscilacion_ojos_cerrados > oscilacion_ojos_abiertos
+    → mayor oscilación con ojos cerrados y alerta
+```
+
+La función devuelve un diccionario con el promedio, máximo y número de
+muestras de cada fase:
 
 ```python
 {
-    "hombro_desnivel": valor_o_None,
-    "inclinacion_tronco": valor_o_None,
-    "estado": "Correcta" o "Revisar" o "Sin datos"
+    "ojos_abiertos": {
+        "oscilacion_maxima": valor,
+        "oscilacion_promedio": valor,
+        "muestras": cantidad
+    },
+    "ojos_cerrados": {
+        "oscilacion_maxima": valor,
+        "oscilacion_promedio": valor,
+        "muestras": cantidad
+    },
+    "diferencia_oscilacion": valor,
+    "estado": "Mayor oscilación con ojos cerrados"
+        o "Sin aumento evidente de oscilación"
 }
 ```
 
-La inclinación del tronco se calcula como la diferencia horizontal entre el centro de los hombros y el centro de las caderas. Los puntos solo se utilizan cuando su visibilidad estimada por MediaPipe es igual o superior a `0.5`; esto evita tomar decisiones con puntos poco confiables. Actualmente el resultado se devuelve en memoria, pero no se guarda en un archivo ni en una base de datos.
+Los puntos solo se utilizan cuando su visibilidad estimada por MediaPipe es
+igual o superior a `0.5`. Actualmente el resultado se devuelve en memoria,
+pero no se guarda en un archivo ni en una base de datos.
 
 ### 4.2 Marcha tándem
 
-En `ejercicio1.py` se comparan las anchuras horizontales de hombros y caderas para obtener un indicador de desequilibrio lateral. La cámara debe ubicarse de frente; la indicación anterior de utilizarla de perfil no era coherente con esta métrica:
+En `ejercicio1.py` se mide el desplazamiento lateral del centro de las
+caderas respecto a una referencia inicial. El desplazamiento se normaliza con
+el ancho de los hombros para reducir el efecto de la resolución y distancia de
+la cámara. La cámara debe ubicarse de frente:
 
 ```text
-desequilibrio_lateral =
-    abs(ancho_hombros - ancho_caderas) × 100
+desvio_lateral =
+    abs(centro_caderas_actual - centro_caderas_inicial)
+    / ancho_hombros × 100
 ```
 
 La regla actual considera:
@@ -137,13 +158,20 @@ La desviación del tronco se calcula mediante:
 desviacion_tronco = abs(centro_hombros_x - centro_caderas_x) × 100
 ```
 
-Además, el ejercicio comprueba que exista una diferencia de altura entre los tobillos (`> 0.05`), como indicador operativo de apoyo unipodal. Si ambos pies permanecen a una altura similar, no se clasifica la postura como correcta aunque el tronco esté alineado.
+Además, el ejercicio comprueba la silueta de la postura:
+
+- Un tobillo debe acercarse a la rodilla o pantorrilla de la pierna de apoyo.
+- La rodilla de la pierna elevada debe abrirse hacia afuera.
+- La pierna elevada debe estar flexionada.
+- El tronco debe conservar su alineación.
+
+La silla es opcional. Puede utilizarse como apoyo de seguridad, pero no se exige ni se intenta detectar como objeto. Las manos pueden mantenerse juntas frente al pecho, como en la primera imagen, o utilizarse para apoyo, como en la segunda imagen; por ello no son una condición obligatoria para aprobar la postura.
 
 La regla actual es:
 
 ```text
-pies a distinta altura y desviacion_tronco < 3.5 → alineación aceptable
-pies a la misma altura → solicitar apoyo unipodal
+pie elevado cerca de la pantorrilla y rodilla abierta → silueta de árbol
+pie sin posición de pantorrilla o rodilla sin apertura → solicitar ajuste
 desviacion_tronco >= 3.5 → tronco inclinado
 ```
 
@@ -160,7 +188,8 @@ Se realizaron las siguientes correcciones sin reemplazar los ejercicios:
 - La evaluación inicial ahora calcula realmente `inclinacion_tronco` y actualiza el estado de la sesión.
 - La marcha tándem solicita una vista frontal, coherente con la métrica de anchura corporal.
 - El apoyo unipodal muestra el ángulo de la pierna de soporte.
-- La postura del árbol verifica también que se haya levantado un pie; antes solo evaluaba la inclinación del tronco y no confirmaba el equilibrio unipodal.
+- La postura del árbol verifica la silueta de árbol: pie elevado hacia la pantorrilla, rodilla abierta y pierna flexionada; antes solo evaluaba la inclinación del tronco y no confirmaba la forma del ejercicio.
+- La postura del árbol permite la variante con silla de la segunda imagen y no exige una posición fija de las manos.
 
 Estas reglas son criterios técnicos iniciales y no deben interpretarse como umbrales clínicos validados hasta realizar una recolección de datos y una evaluación con participantes.
 
